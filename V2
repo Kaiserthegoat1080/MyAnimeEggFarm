@@ -208,9 +208,16 @@ local selectedEggBox = createBox("SelectedEggBox", "")
 selectedEggBox.Text = ""
 local selectedEggToggle = createToggle("Auto Buy Selected: OFF")
 
--- Secret Varieties input (preserved)
+-- Selected varieties whitelist for selected-egg purchases (comma-separated)
+createLabel("Auto Buy Selected Egg Varieties (comma-separated, exact match)")
+local selectedVarietyBox = createBox("SelectedVarietyBox", "")
+selectedVarietyBox.Text = ""
+selectedVarietyBox.TextXAlignment = Enum.TextXAlignment.Left
+selectedVarietyBox.PlaceholderText = "leave empty to allow any variety"
+
+-- Secret Varieties input (preserved) - default to Glitch and Galaxy
 createLabel("Secret Varieties (only buy Secret eggs matching these varieties)")
-local secretVarietyInput = createBox("SecretVarietyInputBox", "") -- default empty = buy any Secret
+local secretVarietyInput = createBox("SecretVarietyInputBox", "Glitch,Galaxy") -- default to watch Glitch & Galaxy
 secretVarietyInput.TextXAlignment = Enum.TextXAlignment.Left
 secretVarietyInput.PlaceholderText = "leave empty to buy any Secret; or type comma-separated varieties"
 
@@ -288,12 +295,9 @@ local function bindFormatting(box)
     end)
 end
 
+-- Bind formatting only for numeric boxes
 bindFormatting(minBox); bindFormatting(maxBox); bindFormatting(skipBox); bindFormatting(delayBox)
-bindFormatting(fastSkipBox); bindFormatting(fastDetectBox); bindFormatting(secretVarietyInput)
-for _, b in ipairs({minBox, maxBox, skipBox, delayBox, fastSkipBox, fastDetectBox}) do
-    local n = b:GetAttribute("NumericValue")
-    if n ~= nil then b.Text = formatWithCommasPreserveDecimals(n) end
-end
+bindFormatting(fastSkipBox); bindFormatting(fastDetectBox)
 
 -- Parse variety input into set (case-insensitive) for Secret whitelist
 local function parseVarietyInput(text)
@@ -306,6 +310,19 @@ local function parseVarietyInput(text)
         end
     end
     return set
+end
+
+-- Parse selected-names input into an array of lower-case partial names
+local function parseSelectedNames(text)
+    local list = {}
+    if not text then return list end
+    for part in string.gmatch(text, "[^,]+") do
+        local trimmed = part:gsub("^%s+", ""):gsub("%s+$", "")
+        if trimmed ~= "" then
+            table.insert(list, trimmed:lower())
+        end
+    end
+    return list
 end
 
 -- State
@@ -534,22 +551,47 @@ local function firePurchase(label)
     end)
 end
 
--- selected egg matching (partial, case-insensitive)
-local function matchesSelectedEgg(label, selectedName)
-    if not selectedName or selectedName == "" then return false end
-    selectedName = tostring(selectedName):lower()
+-- selected egg matching (partial, case-insensitive) updated to support multiple comma-separated names
+local function matchesSelectedEgg(label)
+    local names = parseSelectedNames(selectedEggBox.Text)
+    if #names == 0 then return false end
+    local loweredNames = names
+
     local modelAncestor = label:FindFirstAncestorWhichIsA("Model")
-    if modelAncestor and tostring(modelAncestor.Name):lower():find(selectedName, 1, true) then return true end
+    if modelAncestor then
+        local mname = tostring(modelAncestor.Name):lower()
+        for _, n in ipairs(loweredNames) do
+            if mname:find(n, 1, true) then return true end
+        end
+    end
+
     local containerLabel = label.Parent
     if containerLabel then
         for _, child in ipairs(containerLabel:GetChildren()) do
             if child:IsA("TextLabel") then
                 local txt = tostring(child.Text or ""):lower()
-                if txt:find(selectedName, 1, true) then return true end
+                for _, n in ipairs(loweredNames) do
+                    if txt:find(n, 1, true) then return true end
+                end
             end
         end
     end
     return false
+end
+
+-- selected-variety whitelist (exact match, case-insensitive). Empty => allow any variety.
+local function matchesSelectedVariety(label)
+    if not label or not label.Parent then return true end
+    local set = parseVarietyInput(selectedVarietyBox.Text)
+    if next(set) == nil then return true end
+    local containerLabel = label.Parent
+    local varietyLabel = containerLabel:FindFirstChild("Variety")
+    if not varietyLabel or not varietyLabel:IsA("TextLabel") then
+        -- if no variety label, treat as allowed only if set contains empty? We'll allow purchase by default
+        return true
+    end
+    local varText = tostring(varietyLabel.Text or ""):gsub("^%s+", ""):gsub("%s+$", ""):lower()
+    return set[varText] == true
 end
 
 -- rarity checks (case-insensitive)
@@ -599,7 +641,7 @@ end
 
 -- Handle price label:
 -- Priority:
--- 1) Selected egg (overrides everything)
+-- 1) Selected egg (overrides everything) -- now supports multiple names and variety whitelist
 -- 2) Special rarities (Admin/Developer/Exclusive/Limited) when autoSpecialEnabled -> purchase regardless
 -- 3) Secret rarity: must match secret-variety whitelist (if provided) AND meet price range
 -- 4) Normal eggs: must meet price range (no variety whitelist)
@@ -618,9 +660,8 @@ local function handlePriceLabel(label)
     end
 
     local function check()
-        -- selected egg check (overrides everything)
-        local selectedName = selectedEggBox.Text
-        if selectedEggEnabled and selectedName and selectedName ~= "" and matchesSelectedEgg(label, selectedName) then
+        -- selected egg check (overrides everything) - now requires both name match and variety whitelist
+        if selectedEggEnabled and matchesSelectedEgg(label) and matchesSelectedVariety(label) then
             firePurchase(label)
             return
         end
@@ -874,7 +915,8 @@ task.spawn(function()
 end)
 
 -- selectedEggBox placeholder
-selectedEggBox.PlaceholderText = "Enter egg name (partial match allowed)"
+selectedEggBox.PlaceholderText = "Enter egg name(s), comma-separated (partial match allowed)"
+selectedVarietyBox.PlaceholderText = "Enter variety names, comma-separated (exact match)"
 
 -- Ensure UI shows numeric formatting
 for _, b in ipairs({minBox, maxBox, skipBox, delayBox, fastSkipBox, fastDetectBox}) do
