@@ -1,0 +1,883 @@
+-- LocalScript in StarterPlayerScripts
+-- Single Config table for defaults and behavior
+-- Updated: normal variety whitelist removed, special rarities are purchased when AutoSpecial is ON
+-- regardless of variety/price, Secret eggs still honor the secret-variety whitelist AND must meet
+-- the configured price range.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local UserInputService = game:GetService("UserInputService")
+local player = Players.LocalPlayer
+local guiParent = player:WaitForChild("PlayerGui")
+
+-- Configuration (single source of truth for defaults)
+local Config = {
+    MinPrice = 1000000000,           -- 1B (lowest)
+    MaxPrice = 100000000000,         -- 100B (highest)
+    SkipInterval = 0.5,              -- seconds between confirmed-skip requests (legacy)
+    FastSkipInterval = 0.01,         -- seconds between fast skip requests (no confirmedSkip)
+    FastSkipDetectDuration = 0.5,    -- seconds an egg must persist before firing confirmedSkip
+    ResumeDelay = 1.0,               -- seconds to resume skipping after purchase
+    PurchaseDebounce = 0.05,         -- minimum seconds between purchases per egg
+    EventAutoBuyDefault = true,      -- Auto Buy During Event default
+    AutoSpecialDefault = true,       -- Auto Buy Admin/Developer/Exclusive/Limited default
+    MiniButtonDefaultPos = UDim2.new(0.9, 0, 0.9, 0) -- initial mini button position
+}
+
+-- Safe remotes lookup (best-effort)
+local purchaseEvent, requestEvent, collectEvent, sellEvent
+do
+    local modules = ReplicatedStorage:FindFirstChild("Modules")
+    local internals = modules and modules:FindFirstChild("Internals")
+    local skeleton = internals and internals:FindFirstChild("Skeleton")
+    local conduit = skeleton and skeleton:FindFirstChild("Conduit")
+    local instances = conduit and conduit:FindFirstChild("Instances")
+    purchaseEvent = instances and instances:FindFirstChild("_purchaseEgg")
+    requestEvent = instances and instances:FindFirstChild("_requestEgg")
+    collectEvent = instances and instances:FindFirstChild("_collectEarnings")
+    sellEvent = instances and instances:FindFirstChild("_sellStack")
+end
+
+-- UI root
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "AutoSimpleGui"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = guiParent
+screenGui.IgnoreGuiInset = true
+
+-- Main container (list)
+local container = Instance.new("Frame")
+container.Name = "Container"
+container.AnchorPoint = Vector2.new(0.5, 1)
+container.Size = UDim2.new(0.92, 0, 0.56, 0)
+container.Position = UDim2.new(0.5, 0, 0.98, 0)
+container.BackgroundColor3 = Color3.fromRGB(24, 24, 24)
+container.BorderSizePixel = 0
+container.Parent = screenGui
+container.ClipsDescendants = true
+local containerCorner = Instance.new("UICorner", container); containerCorner.CornerRadius = UDim.new(0, 12)
+
+-- Header (drag handle)
+local header = Instance.new("Frame")
+header.Name = "Header"
+header.Size = UDim2.new(1, 0, 0, 44)
+header.BackgroundTransparency = 1
+header.Parent = container
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(0.6, -12, 1, 0)
+title.Position = UDim2.new(0, 12, 0, 0)
+title.BackgroundTransparency = 1
+title.Text = "Auto Controls"
+title.TextColor3 = Color3.fromRGB(240,240,240)
+title.Font = Enum.Font.SourceSansSemibold
+title.TextSize = 18
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = header
+
+local minimizeBtn = Instance.new("TextButton")
+minimizeBtn.Name = "MinimizeBtn"
+minimizeBtn.Size = UDim2.new(0.36, -12, 0.72, 0)
+minimizeBtn.Position = UDim2.new(0.64, 8, 0.14, 0)
+minimizeBtn.BackgroundColor3 = Color3.fromRGB(60,60,60)
+minimizeBtn.TextColor3 = Color3.fromRGB(255,255,255)
+minimizeBtn.Font = Enum.Font.SourceSansSemibold
+minimizeBtn.TextSize = 14
+minimizeBtn.Text = "Minimize"
+minimizeBtn.Parent = header
+local minCorner = Instance.new("UICorner", minimizeBtn); minCorner.CornerRadius = UDim.new(0, 8)
+
+-- Separate movable mini button (persistent)
+local miniButton = Instance.new("TextButton")
+miniButton.Name = "MiniButton"
+miniButton.Size = UDim2.new(0, 64, 0, 64)
+miniButton.AnchorPoint = Vector2.new(0.5, 0.5)
+miniButton.Position = Config.MiniButtonDefaultPos
+miniButton.BackgroundColor3 = Color3.fromRGB(60,60,60)
+miniButton.TextColor3 = Color3.fromRGB(255,255,255)
+miniButton.Font = Enum.Font.SourceSansSemibold
+miniButton.TextSize = 12
+miniButton.Text = "Auto"
+miniButton.Visible = false
+miniButton.Parent = screenGui
+local miniCorner = Instance.new("UICorner", miniButton); miniCorner.CornerRadius = UDim.new(0, 12)
+
+-- Scrolling content inside container
+local scroll = Instance.new("ScrollingFrame")
+scroll.Name = "Scroll"
+scroll.Size = UDim2.new(1, 0, 1, -44)
+scroll.Position = UDim2.new(0, 0, 0, 44)
+scroll.BackgroundTransparency = 1
+scroll.ScrollBarThickness = 8
+scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+scroll.Parent = container
+
+local content = Instance.new("Frame")
+content.Size = UDim2.new(1, 0, 0, 0)
+content.BackgroundTransparency = 1
+content.Parent = scroll
+
+local list = Instance.new("UIListLayout")
+list.Parent = content
+list.SortOrder = Enum.SortOrder.LayoutOrder
+list.Padding = UDim.new(0, 10)
+local padding = Instance.new("UIPadding", content)
+padding.PaddingTop = UDim.new(0, 10); padding.PaddingBottom = UDim.new(0, 10)
+padding.PaddingLeft = UDim.new(0, 12); padding.PaddingRight = UDim.new(0, 12)
+
+list:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    local sizeY = list.AbsoluteContentSize.Y + 20
+    content.Size = UDim2.new(1, 0, 0, sizeY)
+    scroll.CanvasSize = UDim2.new(0, 0, 0, sizeY)
+end)
+
+-- UI helpers
+local function createLabel(text)
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, 0, 0, 18)
+    lbl.BackgroundTransparency = 1
+    lbl.TextColor3 = Color3.fromRGB(220,220,220)
+    lbl.Text = text
+    lbl.Font = Enum.Font.SourceSans
+    lbl.TextSize = 13
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = content
+    return lbl
+end
+
+local function createBox(name, default)
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, 0, 0, 40)
+    frame.BackgroundTransparency = 1
+    frame.Parent = content
+    local box = Instance.new("TextBox")
+    box.Name = name
+    box.Size = UDim2.new(1, 0, 1, 0)
+    box.BackgroundColor3 = Color3.fromRGB(40,40,40)
+    box.TextColor3 = Color3.fromRGB(255,255,255)
+    box.ClearTextOnFocus = false
+    box.Text = tostring(default)
+    box:SetAttribute("NumericValue", default)
+    box.TextXAlignment = Enum.TextXAlignment.Right
+    box.Font = Enum.Font.SourceSans
+    box.TextSize = 16
+    box.Parent = frame
+    local corner = Instance.new("UICorner", box); corner.CornerRadius = UDim.new(0, 8)
+    return box
+end
+
+local function createToggle(text)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 0, 44)
+    btn.BackgroundColor3 = Color3.fromRGB(60,60,60)
+    btn.TextColor3 = Color3.fromRGB(255,255,255)
+    btn.Font = Enum.Font.SourceSansSemibold
+    btn.TextSize = 16
+    btn.Text = text
+    btn.Parent = content
+    local corner = Instance.new("UICorner", btn); corner.CornerRadius = UDim.new(0, 10)
+    return btn
+end
+
+-- Build UI rows with defaults from Config
+createLabel("Min Price  eggs >= this will be purchased")
+local minBox = createBox("MinPriceBox", Config.MinPrice)
+
+createLabel("Max Price  eggs <= this will be purchased")
+local maxBox = createBox("MaxPriceBox", Config.MaxPrice)
+
+createLabel("Skip Interval seconds how often confirmed-skip request fires")
+local skipBox = createBox("SkipIntervalBox", Config.SkipInterval)
+
+createLabel("Fast Skip Interval seconds (no confirmedSkip) while egg is transient")
+local fastSkipBox = createBox("FastSkipIntervalBox", Config.FastSkipInterval)
+
+createLabel("Fast Skip detect duration seconds (when persistent -> confirmedSkip)")
+local fastDetectBox = createBox("FastSkipDetectBox", Config.FastSkipDetectDuration)
+
+createLabel("Resume Delay seconds pause after purchase before skipping resumes")
+local delayBox = createBox("ResumeDelayBox", Config.ResumeDelay)
+
+createLabel("Auto Buy toggle")
+local autoBuyBtn = createToggle("Auto Buy: OFF")
+
+createLabel("Auto Buy Selected Egg (name, partial match allowed)")
+local selectedEggBox = createBox("SelectedEggBox", "")
+selectedEggBox.Text = ""
+local selectedEggToggle = createToggle("Auto Buy Selected: OFF")
+
+-- Secret Varieties input (preserved)
+createLabel("Secret Varieties (only buy Secret eggs matching these varieties)")
+local secretVarietyInput = createBox("SecretVarietyInputBox", "") -- default empty = buy any Secret
+secretVarietyInput.TextXAlignment = Enum.TextXAlignment.Left
+secretVarietyInput.PlaceholderText = "leave empty to buy any Secret; or type comma-separated varieties"
+
+-- Small hint label explaining behavior
+local hintLabel = Instance.new("TextLabel")
+hintLabel.Size = UDim2.new(1, 0, 0, 16)
+hintLabel.BackgroundTransparency = 1
+hintLabel.TextColor3 = Color3.fromRGB(180,180,180)
+hintLabel.Text = "Hint: Secret eggs must match this list (or leave empty to allow any Secret) AND meet price limits."
+hintLabel.Font = Enum.Font.SourceSansItalic
+hintLabel.TextSize = 12
+hintLabel.TextXAlignment = Enum.TextXAlignment.Left
+hintLabel.Parent = content
+
+-- Combined Admin/Developer/Exclusive/Limited toggle (default ON)
+createLabel("Auto Buy Special Rarities (Admin/Developer/Exclusive/Limited)")
+local specialToggle = createToggle("Auto Buy Special Rarities: " .. (Config.AutoSpecialDefault and "ON" or "OFF"))
+specialToggle.BackgroundColor3 = Config.AutoSpecialDefault and Color3.fromRGB(0,170,0) or Color3.fromRGB(60,60,60)
+
+-- Auto Buy During Event toggle (default from Config)
+createLabel("Auto Buy During Event (watches Glitch & Galaxy)")
+local eventAutoBuyBtn = createToggle("Auto Buy During Event: " .. (Config.EventAutoBuyDefault and "ON" or "OFF"))
+eventAutoBuyBtn.BackgroundColor3 = Config.EventAutoBuyDefault and Color3.fromRGB(0,170,0) or Color3.fromRGB(60,60,60)
+
+createLabel("Auto Farm toggle collect sell equip loop")
+local autoFarmBtn = createToggle("Auto Farm: OFF")
+
+local status = Instance.new("TextLabel")
+status.Size = UDim2.new(1, 0, 0, 18)
+status.BackgroundTransparency = 1
+status.TextColor3 = Color3.fromRGB(200,200,200)
+status.Text = "Status: Idle"
+status.Font = Enum.Font.SourceSans
+status.TextSize = 13
+status.TextXAlignment = Enum.TextXAlignment.Left
+status.Parent = content
+
+-- Formatting helpers
+local function extractNumeric(str)
+    if not str then return nil end
+    local clean = str:gsub("[^%d%.%-]", "")
+    local firstDot = clean:find("%.")
+    if firstDot then clean = clean:sub(1, firstDot) .. clean:sub(firstDot):gsub("%.", "") end
+    clean = clean:gsub("%-(.+)%-", "%1")
+    return tonumber(clean)
+end
+
+local function formatWithCommasPreserveDecimals(num)
+    if num == nil then return "" end
+    local negative = false
+    if num < 0 then negative = true; num = -num end
+    local s = tostring(num)
+    local intPart, fracPart = s:match("^(%d+)(%.%d+)$")
+    if not intPart then intPart = s:match("^(%d+)$") or "0"; fracPart = s:match("^%d+(%.%d+)$") or "" end
+    local result = ""
+    while #intPart > 3 do
+        local tail = intPart:sub(-3)
+        result = "," .. tail .. result
+        intPart = intPart:sub(1, -4)
+    end
+    result = intPart .. result
+    if fracPart and fracPart ~= "" then result = result .. fracPart end
+    if negative then result = "-" .. result end
+    return result
+end
+
+local function bindFormatting(box)
+    box:GetPropertyChangedSignal("Text"):Connect(function()
+        local n = extractNumeric(box.Text)
+        if n ~= nil then box:SetAttribute("NumericValue", n) end
+    end)
+    box.FocusLost:Connect(function()
+        local n = box:GetAttribute("NumericValue")
+        if n ~= nil and n ~= "" then box.Text = formatWithCommasPreserveDecimals(n) end
+    end)
+end
+
+bindFormatting(minBox); bindFormatting(maxBox); bindFormatting(skipBox); bindFormatting(delayBox)
+bindFormatting(fastSkipBox); bindFormatting(fastDetectBox); bindFormatting(secretVarietyInput)
+for _, b in ipairs({minBox, maxBox, skipBox, delayBox, fastSkipBox, fastDetectBox}) do
+    local n = b:GetAttribute("NumericValue")
+    if n ~= nil then b.Text = formatWithCommasPreserveDecimals(n) end
+end
+
+-- Parse variety input into set (case-insensitive) for Secret whitelist
+local function parseVarietyInput(text)
+    if not text then return {} end
+    local set = {}
+    for part in string.gmatch(text, "[^,]+") do
+        local trimmed = part:gsub("^%s+", ""):gsub("%s+$", "")
+        if trimmed ~= "" then
+            set[trimmed:lower()] = true
+        end
+    end
+    return set
+end
+
+-- State
+local autoBuyEnabled = false
+local skipEnabled = false
+local autoFarmEnabled = false
+local selectedEggEnabled = false
+local autoSpecialEnabled = Config.AutoSpecialDefault
+
+-- Event auto-buy state
+local eventAutoBuyEnabled = Config.EventAutoBuyDefault
+local eventForceOn = false
+local eventPrevAutoBuy = false
+
+local PURCHASE_DEBOUNCE = Config.PurchaseDebounce
+local lastFireById = {}
+
+-- Fast-skip tracking
+local trackedPriceLabel = nil
+local trackedSince = 0
+local lastConfirmedSkipAt = 0
+
+-- Toggle handlers
+autoBuyBtn.MouseButton1Click:Connect(function()
+    autoBuyEnabled = not autoBuyEnabled
+    skipEnabled = autoBuyEnabled
+    autoBuyBtn.Text = "Auto Buy: " .. (autoBuyEnabled and "ON" or "OFF")
+    autoBuyBtn.BackgroundColor3 = autoBuyEnabled and Color3.fromRGB(0,170,0) or Color3.fromRGB(60,60,60)
+    status.Text = autoBuyEnabled and "Status: Auto Buy ON" or "Status: Idle"
+end)
+
+selectedEggToggle.MouseButton1Click:Connect(function()
+    selectedEggEnabled = not selectedEggEnabled
+    selectedEggToggle.Text = "Auto Buy Selected: " .. (selectedEggEnabled and "ON" or "OFF")
+    selectedEggToggle.BackgroundColor3 = selectedEggEnabled and Color3.fromRGB(0,170,0) or Color3.fromRGB(60,60,60)
+    status.Text = selectedEggEnabled and "Status: Auto Buy Selected ON" or "Status: Idle"
+end)
+
+specialToggle.MouseButton1Click:Connect(function()
+    autoSpecialEnabled = not autoSpecialEnabled
+    specialToggle.Text = "Auto Buy Special Rarities: " .. (autoSpecialEnabled and "ON" or "OFF")
+    specialToggle.BackgroundColor3 = autoSpecialEnabled and Color3.fromRGB(0,170,0) or Color3.fromRGB(60,60,60)
+    status.Text = autoSpecialEnabled and "Status: Auto Buy Special ON" or "Status: Idle"
+end)
+
+eventAutoBuyBtn.MouseButton1Click:Connect(function()
+    eventAutoBuyEnabled = not eventAutoBuyEnabled
+    eventAutoBuyBtn.Text = "Auto Buy During Event: " .. (eventAutoBuyEnabled and "ON" or "OFF")
+    eventAutoBuyBtn.BackgroundColor3 = eventAutoBuyEnabled and Color3.fromRGB(0,170,0) or Color3.fromRGB(60,60,60)
+    status.Text = eventAutoBuyEnabled and "Status: Event watch ON" or "Status: Idle"
+    if eventAutoBuyEnabled then
+        pcall(function() checkEventLabelsAndApply() end)
+    else
+        if eventForceOn then
+            eventForceOn = false
+            autoBuyEnabled = eventPrevAutoBuy
+            skipEnabled = autoBuyEnabled
+            autoBuyBtn.Text = "Auto Buy: " .. (autoBuyEnabled and "ON" or "OFF")
+            autoBuyBtn.BackgroundColor3 = autoBuyEnabled and Color3.fromRGB(0,170,0) or Color3.fromRGB(60,60,60)
+            status.Text = autoBuyEnabled and "Status: Auto Buy ON" or "Status: Idle"
+        end
+    end
+end)
+
+autoFarmBtn.MouseButton1Click:Connect(function()
+    autoFarmEnabled = not autoFarmEnabled
+    autoFarmBtn.Text = "Auto Farm: " .. (autoFarmEnabled and "ON" or "OFF")
+    autoFarmBtn.BackgroundColor3 = autoFarmEnabled and Color3.fromRGB(0,170,0) or Color3.fromRGB(60,60,60)
+    status.Text = autoFarmEnabled and "Status: Auto Farm ON" or "Status: Idle"
+end)
+
+-- Minimize / Restore (separate mini UI that remembers position)
+local minimized = false
+local lastMiniPosition = miniButton.Position
+
+local function minimizeToMini()
+    if minimized then return end
+    minimized = true
+    if lastMiniPosition and lastMiniPosition ~= UDim2.new(0,0,0,0) then
+        miniButton.Position = lastMiniPosition
+    end
+    miniButton.Visible = true
+    container.Visible = false
+    status.Text = "Status: Minimized"
+end
+
+local function restoreFromMini()
+    if not minimized then return end
+    minimized = false
+    miniButton.Visible = false
+    container.Visible = true
+    status.Text = "Status: Idle"
+end
+
+minimizeBtn.MouseButton1Click:Connect(minimizeToMini)
+miniButton.MouseButton1Click:Connect(restoreFromMini)
+
+-- Draggable header (moves container)
+local dragging = false
+local dragStart = nil
+local startPos = nil
+local function beginDrag(input)
+    dragging = true
+    dragStart = input.Position
+    startPos = container.Position
+end
+local function updateDrag(input)
+    if not dragging or not dragStart or not startPos then return end
+    local delta = input.Position - dragStart
+    local screenSize = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1920,1080)
+    local newX = startPos.X.Scale + (delta.X / screenSize.X)
+    local newY = startPos.Y.Scale + (delta.Y / screenSize.Y)
+    container.Position = UDim2.new(newX, startPos.X.Offset, newY, startPos.Y.Offset)
+end
+local function endDrag()
+    dragging = false; dragStart = nil; startPos = nil
+end
+
+header.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+        beginDrag(input)
+    end
+end)
+header.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement then
+        updateDrag(input)
+    end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement) then
+        updateDrag(input)
+    end
+end)
+UserInputService.InputEnded:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1) then
+        endDrag()
+    end
+end)
+
+-- Mini button drag (updates lastMiniPosition)
+local miniDragging = false
+local miniStart = nil
+local miniStartPos = nil
+miniButton.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+        miniDragging = true
+        miniStart = input.Position
+        miniStartPos = miniButton.Position
+    end
+end)
+miniButton.InputChanged:Connect(function(input)
+    if not miniDragging then return end
+    if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement then
+        local delta = input.Position - miniStart
+        local screenSize = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1920,1080)
+        local newX = miniStartPos.X.Scale + (delta.X / screenSize.X)
+        local newY = miniStartPos.Y.Scale + (delta.Y / screenSize.Y)
+        miniButton.Position = UDim2.new(newX, miniStartPos.X.Offset, newY, miniStartPos.Y.Offset)
+    end
+end)
+UserInputService.InputEnded:Connect(function(input)
+    if miniDragging and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1) then
+        miniDragging = false
+        miniStart = nil
+        miniStartPos = nil
+        lastMiniPosition = miniButton.Position
+    end
+end)
+
+-- Purchase helpers
+local function parsePriceLabel(raw)
+    if not raw or raw == "" then return nil end
+    local s = raw:lower():gsub("%$", ""):gsub(",", ""):gsub("%s+", "")
+    local mult = 1
+    if s:match("k$") then mult = 1000; s = s:gsub("k$", "") end
+    if s:match("m$") then mult = 1000000; s = s:gsub("m$", "") end
+    if s:match("b$") then mult = 1000000000; s = s:gsub("b$", "") end
+    local n = tonumber(s)
+    if not n then return nil end
+    return n * mult
+end
+
+local function firePurchase(label)
+    if not label or not label.Parent then return end
+    local containerLabel = label.Parent
+    local rarityLabel = containerLabel:FindFirstChild("Rarity")
+    local varietyLabel = containerLabel:FindFirstChild("Variety")
+    local rarity = rarityLabel and rarityLabel:IsA("TextLabel") and rarityLabel.Text or "Unknown"
+    local variety = varietyLabel and varietyLabel:IsA("TextLabel") and varietyLabel.Text or "Default"
+    local modelAncestor = label:FindFirstAncestorWhichIsA("Model")
+    if not modelAncestor then return end
+    local eggId = "entity_" .. modelAncestor.Name .. "_egg"
+
+    local now = os.clock()
+    if lastFireById[eggId] and (now - lastFireById[eggId]) < PURCHASE_DEBOUNCE then return end
+    lastFireById[eggId] = now
+
+    -- Stop skipping immediately
+    skipEnabled = false
+    status.Text = "Status: Purchasing..."
+
+    local args = {
+        [1] = {
+            ["__raw"] = true,
+            ["data"] = {
+                ["id"] = eggId,
+                ["rarity"] = rarity,
+                ["variety"] = variety
+            }
+        }
+    }
+    if purchaseEvent then
+        purchaseEvent:FireServer(unpack(args))
+    end
+
+    -- Resume skip spam after configurable delay (default from Config)
+    local resumeDelay = delayBox:GetAttribute("NumericValue") or Config.ResumeDelay
+    if type(resumeDelay) ~= "number" then resumeDelay = tonumber(resumeDelay) or Config.ResumeDelay end
+    task.delay(resumeDelay, function()
+        if autoBuyEnabled then
+            skipEnabled = true
+            status.Text = "Status: Skipping..."
+        else
+            status.Text = "Status: Idle"
+        end
+    end)
+end
+
+-- selected egg matching (partial, case-insensitive)
+local function matchesSelectedEgg(label, selectedName)
+    if not selectedName or selectedName == "" then return false end
+    selectedName = tostring(selectedName):lower()
+    local modelAncestor = label:FindFirstAncestorWhichIsA("Model")
+    if modelAncestor and tostring(modelAncestor.Name):lower():find(selectedName, 1, true) then return true end
+    local containerLabel = label.Parent
+    if containerLabel then
+        for _, child in ipairs(containerLabel:GetChildren()) do
+            if child:IsA("TextLabel") then
+                local txt = tostring(child.Text or ""):lower()
+                if txt:find(selectedName, 1, true) then return true end
+            end
+        end
+    end
+    return false
+end
+
+-- rarity checks (case-insensitive)
+local function getRarityText(label)
+    if not label or not label.Parent then return "" end
+    local containerLabel = label.Parent
+    local rarityLabel = containerLabel:FindFirstChild("Rarity")
+    if not rarityLabel or not rarityLabel:IsA("TextLabel") then return "" end
+    return tostring(rarityLabel.Text or ""):lower()
+end
+
+local function isSecretRarity(label)
+    return getRarityText(label) == "secret"
+end
+
+local function isExclusiveRarity(label)
+    return getRarityText(label) == "exclusive"
+end
+
+local function isLimitedRarity(label)
+    return getRarityText(label) == "limited"
+end
+
+local function isAdminRarity(label)
+    return getRarityText(label) == "admin"
+end
+
+local function isDeveloperRarity(label)
+    return getRarityText(label) == "developer"
+end
+
+-- Helper: checks if a Secret egg's variety matches the secret-variety input
+local function matchesSecretVariety(label)
+    if not label or not label.Parent then return false end
+    if not isSecretRarity(label) then return false end
+    local containerLabel = label.Parent
+    local varietyLabel = containerLabel:FindFirstChild("Variety")
+    if not varietyLabel or not varietyLabel:IsA("TextLabel") then return true end -- if no variety label, allow purchase
+    local varText = tostring(varietyLabel.Text or ""):gsub("^%s+", ""):gsub("%s+$", ""):lower()
+    local set = parseVarietyInput(secretVarietyInput.Text)
+    if next(set) == nil then
+        -- empty input means buy any Secret (but still must meet price range)
+        return true
+    end
+    return set[varText] == true
+end
+
+-- Handle price label:
+-- Priority:
+-- 1) Selected egg (overrides everything)
+-- 2) Special rarities (Admin/Developer/Exclusive/Limited) when autoSpecialEnabled -> purchase regardless
+-- 3) Secret rarity: must match secret-variety whitelist (if provided) AND meet price range
+-- 4) Normal eggs: must meet price range (no variety whitelist)
+local function handlePriceLabel(label)
+    if not label or not label:IsA("TextLabel") or label.Name ~= "Price" then return end
+
+    -- Track this label for fast-skip detection
+    local function startTracking()
+        trackedPriceLabel = label
+        trackedSince = os.clock()
+    end
+
+    local function onTextChanged()
+        trackedPriceLabel = label
+        trackedSince = os.clock()
+    end
+
+    local function check()
+        -- selected egg check (overrides everything)
+        local selectedName = selectedEggBox.Text
+        if selectedEggEnabled and selectedName and selectedName ~= "" and matchesSelectedEgg(label, selectedName) then
+            firePurchase(label)
+            return
+        end
+
+        -- combined Admin/Developer/Exclusive/Limited override (ignores price & variety) if enabled
+        if autoSpecialEnabled and (isExclusiveRarity(label) or isLimitedRarity(label) or isAdminRarity(label) or isDeveloperRarity(label)) then
+            firePurchase(label)
+            return
+        end
+
+        -- price-based logic applies to normal eggs and Secret eggs (Secret also needs variety match)
+        if not autoBuyEnabled then return end
+        local value = parsePriceLabel(label.Text)
+        local minVal = minBox:GetAttribute("NumericValue") or extractNumeric(minBox.Text) or 0
+        local maxVal = maxBox:GetAttribute("NumericValue") or extractNumeric(maxBox.Text) or math.huge
+
+        if not value then return end
+
+        -- Secret eggs: require both variety match (secret whitelist) AND price range
+        if isSecretRarity(label) then
+            if matchesSecretVariety(label) and value >= minVal and value <= maxVal then
+                firePurchase(label)
+            end
+            return
+        end
+
+        -- Normal eggs: price-only check (no variety whitelist)
+        if value >= minVal and value <= maxVal then
+            firePurchase(label)
+        end
+    end
+
+    -- initial tracking and check
+    startTracking()
+    check()
+
+    -- connect to text changes for this price label
+    label:GetPropertyChangedSignal("Text"):Connect(function()
+        onTextChanged()
+        pcall(check)
+    end)
+end
+
+local function setupContainer(containerObj)
+    for _, child in ipairs(containerObj:GetChildren()) do
+        if child:IsA("TextLabel") and child.Name == "Price" then
+            handlePriceLabel(child)
+        end
+    end
+    containerObj.ChildAdded:Connect(function(child)
+        if child:IsA("TextLabel") and child.Name == "Price" then
+            handlePriceLabel(child)
+        end
+    end)
+end
+
+local function setupEggtag(eggtag)
+    local c = eggtag:FindFirstChild("Container") or eggtag:WaitForChild("Container", 10)
+    if c then setupContainer(c) end
+end
+
+for _, inst in ipairs(Workspace:GetDescendants()) do
+    if inst.Name == "Eggtag" then setupEggtag(inst) end
+end
+
+Workspace.DescendantAdded:Connect(function(inst)
+    if inst.Name == "Eggtag" then setupEggtag(inst)
+    elseif inst.Name == "Price" and inst:IsA("TextLabel") then handlePriceLabel(inst) end
+end)
+
+-- Event monitoring: paths to watch
+local eventBoard = Workspace:FindFirstChild("Map") and Workspace.Map:FindFirstChild("Essentials")
+eventBoard = eventBoard and eventBoard:FindFirstChild("EventBoard")
+local surfaceGui = eventBoard and eventBoard:FindFirstChild("SurfaceGui")
+local glitchLabel = surfaceGui and surfaceGui:FindFirstChild("Glitch")
+local galaxyLabel = surfaceGui and surfaceGui:FindFirstChild("Galaxy")
+
+-- Helper to determine if a label's text indicates active event
+local function isLabelActive(lbl)
+    if not lbl or not lbl:IsA("TextLabel") then return false end
+    local ok, txt = pcall(function() return tostring(lbl.Text or "") end)
+    if not ok then return false end
+    txt = txt:lower()
+    return txt:find("event is active", 1, true) ~= nil
+end
+
+-- Core function: check both labels and apply forced AutoBuy if needed
+function checkEventLabelsAndApply()
+    if not eventAutoBuyEnabled then return end
+    local active = false
+    if isLabelActive(glitchLabel) then active = true end
+    if isLabelActive(galaxyLabel) then active = true end
+
+    if active and not eventForceOn then
+        -- turn on AutoBuy and remember previous state
+        eventPrevAutoBuy = autoBuyEnabled
+        eventForceOn = true
+        autoBuyEnabled = true
+        skipEnabled = true
+        autoBuyBtn.Text = "Auto Buy: ON"
+        autoBuyBtn.BackgroundColor3 = Color3.fromRGB(0,170,0)
+        status.Text = "Status: Event active - Auto Buy ON"
+    elseif not active and eventForceOn then
+        -- restore previous AutoBuy state
+        eventForceOn = false
+        autoBuyEnabled = eventPrevAutoBuy
+        skipEnabled = autoBuyEnabled
+        autoBuyBtn.Text = "Auto Buy: " .. (autoBuyEnabled and "ON" or "OFF")
+        autoBuyBtn.BackgroundColor3 = autoBuyEnabled and Color3.fromRGB(0,170,0) or Color3.fromRGB(60,60,60)
+        status.Text = autoBuyEnabled and "Status: Auto Buy ON" or "Status: Idle"
+    end
+end
+
+-- Connect to Text changes for immediate response
+if glitchLabel and glitchLabel:IsA("TextLabel") then
+    glitchLabel:GetPropertyChangedSignal("Text"):Connect(function() pcall(checkEventLabelsAndApply) end)
+end
+if galaxyLabel and galaxyLabel:IsA("TextLabel") then
+    galaxyLabel:GetPropertyChangedSignal("Text"):Connect(function() pcall(checkEventLabelsAndApply) end)
+end
+
+-- Run initial check on startup (apply Config defaults to UI)
+pcall(function()
+    eventAutoBuyBtn.Text = "Auto Buy During Event: " .. (Config.EventAutoBuyDefault and "ON" or "OFF")
+    eventAutoBuyBtn.BackgroundColor3 = Config.EventAutoBuyDefault and Color3.fromRGB(0,170,0) or Color3.fromRGB(60,60,60)
+    checkEventLabelsAndApply()
+end)
+
+-- Helper to fire requestEvent safely (uses requestEvent if available, otherwise tries direct path)
+local function fireRequestEgg(argsTable)
+    if requestEvent then
+        requestEvent:FireServer(unpack(argsTable))
+    else
+        local ok, conduit = pcall(function()
+            return ReplicatedStorage.Modules.Internals.Skeleton.Conduit.Instances
+        end)
+        if ok and conduit and conduit:FindFirstChild("_requestEgg") then
+            conduit._requestEgg:FireServer(unpack(argsTable))
+        end
+    end
+end
+
+-- Skip spam loop with fast-skip behavior (keeps previous confirmed-skip behavior)
+task.spawn(function()
+    while true do
+        local fastInterval = fastSkipBox:GetAttribute("NumericValue") or Config.FastSkipInterval
+        if type(fastInterval) ~= "number" then fastInterval = tonumber(fastInterval) or Config.FastSkipInterval end
+        local detectDuration = fastDetectBox:GetAttribute("NumericValue") or Config.FastSkipDetectDuration
+        if type(detectDuration) ~= "number" then detectDuration = tonumber(detectDuration) or Config.FastSkipDetectDuration end
+        local confirmedInterval = skipBox:GetAttribute("NumericValue") or Config.SkipInterval
+        if type(confirmedInterval) ~= "number" then confirmedInterval = tonumber(confirmedInterval) or Config.SkipInterval end
+
+        if autoBuyEnabled and skipEnabled then
+            local now = os.clock()
+            local shouldFireConfirmed = false
+
+            if trackedPriceLabel and trackedSince and (now - trackedSince) >= detectDuration then
+                if (now - lastConfirmedSkipAt) >= math.max(0.05, detectDuration) then
+                    shouldFireConfirmed = true
+                    lastConfirmedSkipAt = now
+                end
+            end
+
+            if shouldFireConfirmed then
+                local args = {
+                    [1] = {
+                        ["__raw"] = true,
+                        ["data"] = {
+                            ["confirmedSkip"] = true
+                        }
+                    }
+                }
+                fireRequestEgg(args)
+                status.Text = "Status: Confirmed Skip Sent"
+                task.wait(confirmedInterval)
+            else
+                local args = {
+                    [1] = {
+                        ["__raw"] = true,
+                        ["data"] = {}
+                    }
+                }
+                fireRequestEgg(args)
+                status.Text = "Status: Fast Skipping..."
+                task.wait(math.max(0.001, fastInterval))
+            end
+        else
+            task.wait(0.1)
+        end
+    end
+end)
+
+-- AutoFarm helpers: equip Box Stack tool and only sell when equipped
+local function equipBoxStackTool()
+    local backpack = player:FindFirstChild("Backpack")
+    if not backpack then return false end
+    -- Find a tool whose name starts with "Box Stack [" (bracket content varies)
+    for _, item in ipairs(backpack:GetChildren()) do
+        if item:IsA("Tool") and tostring(item.Name):match("^Box Stack %[") then
+            -- Equip via humanoid if character exists
+            if player.Character then
+                local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+                if humanoid then
+                    pcall(function() humanoid:EquipTool(item) end)
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function isBoxStackEquipped()
+    if not player.Character then return false end
+    local equippedTool = player.Character:FindFirstChildOfClass("Tool")
+    if not equippedTool then return false end
+    return tostring(equippedTool.Name):match("^Box Stack %[") ~= nil
+end
+
+local function fireCollect()
+    if collectEvent then
+        local args = { [1] = { ["__raw"] = true, ["data"] = {} } }
+        collectEvent:FireServer(unpack(args))
+    end
+end
+local function fireSell()
+    if sellEvent then
+        local args = { [1] = { ["__raw"] = true, ["data"] = {} } }
+        sellEvent:FireServer(unpack(args))
+    end
+end
+
+-- AutoFarm loop: equip Box Stack tool and only sell when equipped
+task.spawn(function()
+    while true do
+        if autoFarmEnabled then
+            status.Text = "Status: Auto Farm active"
+            -- Try to equip the Box Stack tool
+            local equipped = equipBoxStackTool()
+            -- Collect earnings regardless
+            fireCollect()
+            -- Only fire sell if the Box Stack tool is equipped
+            if equipped or isBoxStackEquipped() then
+                fireSell()
+            end
+            task.wait(1)
+        else
+            task.wait(0.25)
+        end
+    end
+end)
+
+-- selectedEggBox placeholder
+selectedEggBox.PlaceholderText = "Enter egg name (partial match allowed)"
+
+-- Ensure UI shows numeric formatting
+for _, b in ipairs({minBox, maxBox, skipBox, delayBox, fastSkipBox, fastDetectBox}) do
+    local n = b:GetAttribute("NumericValue")
+    if n ~= nil then b.Text = formatWithCommasPreserveDecimals(n) end
+end
