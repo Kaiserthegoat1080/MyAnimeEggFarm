@@ -3,7 +3,8 @@
 -- Updated: Rayfield tabs + friendly price parsing/formatting (100b / 100bil / 100 billion / 1.5m / 5k)
 -- UI tabs: Skipping, Purchase, Selected, Secrets, AutoFarm
 -- Hidden TextBoxes preserved for compatibility with existing logic if Rayfield fails to load.
--- Fix (2025-12-26): robust firing for collect/sell remotes when autfarm buttons/loop call them.
+-- Fix: safe Set calls for Rayfield controls to avoid nil:Set errors.
+-- Default MinPrice changed to 10,000,000,000 (10 billion)
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -14,7 +15,7 @@ local guiParent = player:WaitForChild("PlayerGui")
 
 -- Configuration (single source of truth for defaults)
 local Config = {
-    MinPrice = 1000000000,           -- 1B (lowest)
+    MinPrice = 10000000000,          -- 10B (default minimum price)
     MaxPrice = 100000000000,         -- 100B (highest)
     SkipInterval = 0.5,              -- seconds between confirmed-skip requests (legacy)
     FastSkipInterval = 0.01,         -- seconds between fast skip requests (no confirmedSkip)
@@ -595,6 +596,13 @@ if Rayfield then
         ConfigurationSaving = { Enabled = false }
     })
 
+    -- helper: safely call :Set on a Rayfield control if it exists
+    local function safeSet(ctrl, value)
+        if ctrl and type(ctrl.Set) == "function" then
+            pcall(function() ctrl:Set(value) end)
+        end
+    end
+
     -- Skipping tab
     local SkipTab = Window:CreateTab("Skipping", 4483362458)
     SkipTab:CreateSection("Skip Timing")
@@ -607,7 +615,10 @@ if Rayfield then
         Callback = function(text)
             skipBox.Text = text or ""
             local n = extractNumeric(text)
-            if n then skipBox:SetAttribute("NumericValue", n); skipInput:Set(formatWithCommasPreserveDecimals(n)) end
+            if n then
+                skipBox:SetAttribute("NumericValue", n)
+                safeSet(skipInput, formatWithCommasPreserveDecimals(n))
+            end
         end
     })
     local fastInput = SkipTab:CreateInput({
@@ -619,7 +630,10 @@ if Rayfield then
         Callback = function(text)
             fastSkipBox.Text = text or ""
             local n = extractNumeric(text)
-            if n then fastSkipBox:SetAttribute("NumericValue", n); fastInput:Set(tostring(n)) end
+            if n then
+                fastSkipBox:SetAttribute("NumericValue", n)
+                safeSet(fastInput, tostring(n))
+            end
         end
     })
     local detectInput = SkipTab:CreateInput({
@@ -631,7 +645,10 @@ if Rayfield then
         Callback = function(text)
             fastDetectBox.Text = text or ""
             local n = extractNumeric(text)
-            if n then fastDetectBox:SetAttribute("NumericValue", n); detectInput:Set(tostring(n)) end
+            if n then
+                fastDetectBox:SetAttribute("NumericValue", n)
+                safeSet(detectInput, tostring(n))
+            end
         end
     })
     local resumeInput = SkipTab:CreateInput({
@@ -643,7 +660,10 @@ if Rayfield then
         Callback = function(text)
             delayBox.Text = text or ""
             local n = extractNumeric(text)
-            if n then delayBox:SetAttribute("NumericValue", n); resumeInput:Set(tostring(n)) end
+            if n then
+                delayBox:SetAttribute("NumericValue", n)
+                safeSet(resumeInput, tostring(n))
+            end
         end
     })
 
@@ -662,16 +682,16 @@ if Rayfield then
             if n then
                 minBox:SetAttribute("NumericValue", n)
                 minBox.Text = formatWithCommasPreserveDecimals(n)
-                minInput:Set(formatWithCommasPreserveDecimals(n))
+                safeSet(minInput, formatWithCommasPreserveDecimals(n))
             else
                 local q = extractNumeric(text)
                 if q then
                     minBox:SetAttribute("NumericValue", q)
                     minBox.Text = formatWithCommasPreserveDecimals(q)
-                    minInput:Set(formatWithCommasPreserveDecimals(q))
+                    safeSet(minInput, formatWithCommasPreserveDecimals(q))
                 else
                     minBox.Text = text
-                    minInput:Set(text)
+                    safeSet(minInput, text)
                 end
             end
         end
@@ -688,16 +708,16 @@ if Rayfield then
             if n then
                 maxBox:SetAttribute("NumericValue", n)
                 maxBox.Text = formatWithCommasPreserveDecimals(n)
-                maxInput:Set(formatWithCommasPreserveDecimals(n))
+                safeSet(maxInput, formatWithCommasPreserveDecimals(n))
             else
                 local q = extractNumeric(text)
                 if q then
                     maxBox:SetAttribute("NumericValue", q)
                     maxBox.Text = formatWithCommasPreserveDecimals(q)
-                    maxInput:Set(formatWithCommasPreserveDecimals(q))
+                    safeSet(maxInput, formatWithCommasPreserveDecimals(q))
                 else
                     maxBox.Text = text
-                    maxInput:Set(text)
+                    safeSet(maxInput, text)
                 end
             end
         end
