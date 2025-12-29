@@ -145,7 +145,7 @@ local delayBox = makeHiddenBox("ResumeDelayBox", tostring(Config.ResumeDelay), C
 
 local selectedEggBox = makeHiddenBox("SelectedEggBox", "", nil, false)
 local selectedVarietyBox = makeHiddenBox("SelectedVarietyBox", "", nil, false)
-local secretVarietyInput = makeHiddenBox("SecretVarietyInputBox", "Glitch,Galaxy", nil, false) -- default Glitch,Galaxy
+local secretVarietyInput = makeHiddenBox("SecretVarietyInputBox", "Galaxy", nil, false) -- default Galaxy
 
 local status = Instance.new("TextBox")
 status.Name = "StatusLabel"
