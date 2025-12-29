@@ -15,7 +15,7 @@ local guiParent = player:WaitForChild("PlayerGui")
 
 -- Configuration (single source of truth for defaults)
 local Config = {
-    MinPrice = 10000000000,          -- 10B (default minimum price)
+    MinPrice = 25000000000,          -- 25B (default minimum price)
     MaxPrice = 100000000000,         -- 100B (highest)
     SkipInterval = 0.5,              -- seconds between confirmed-skip requests (legacy)
     FastSkipInterval = 0.01,         -- seconds between fast skip requests (no confirmedSkip)
