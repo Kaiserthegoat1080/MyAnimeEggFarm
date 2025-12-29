@@ -15,7 +15,7 @@ local guiParent = player:WaitForChild("PlayerGui")
 
 -- Configuration (single source of truth for defaults)
 local Config = {
-    MinPrice = 25000000000,          -- 25B (default minimum price)
+    MinPrice = 10000000000,          -- 10B (default minimum price)
     MaxPrice = 100000000000,         -- 100B (highest)
     SkipInterval = 0.5,              -- seconds between confirmed-skip requests (legacy)
     FastSkipInterval = 0.01,         -- seconds between fast skip requests (no confirmedSkip)
@@ -145,7 +145,7 @@ local delayBox = makeHiddenBox("ResumeDelayBox", tostring(Config.ResumeDelay), C
 
 local selectedEggBox = makeHiddenBox("SelectedEggBox", "", nil, false)
 local selectedVarietyBox = makeHiddenBox("SelectedVarietyBox", "", nil, false)
-local secretVarietyInput = makeHiddenBox("SecretVarietyInputBox", "Galaxy", nil, false) -- default Galaxy
+local secretVarietyInput = makeHiddenBox("SecretVarietyInputBox", "Glitch,Galaxy", nil, false) -- default Glitch,Galaxy
 
 local status = Instance.new("TextBox")
 status.Name = "StatusLabel"
